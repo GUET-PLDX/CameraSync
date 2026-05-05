@@ -7,8 +7,9 @@ MCU 侧相机同步模块。
 `CameraSync` 订阅一个带 Topic envelope timestamp 的 IMU topic，按 IMU 样本分频触发相机 GPIO，并发布同步结果 topic。
 
 - IMU 驱动只负责正常发布传感器数据
-- 相机触发频率只由 `CameraSync.trigger_div` 控制
-- 上位机命令只创建一个同步标记：MCU 在下一个反向电平周期开始执行，把这段周期拉长 `div` 倍，然后立刻恢复正常周期
+- 相机默认触发频率由 `CameraSync.trigger_div` 控制，建议默认值保守一些，避免 MCU 单独运行时相机触发过快
+- 上位机命令创建一个同步标记，并显式给出同步完成后的运行分频
+- 同步命令会先制造一次可预测的异常图像间隔，完成同步后切到 `run_trigger_div`
 - 完成分频后的第一个有效电平边沿是同步点
 - 同步结果 topic 的 envelope timestamp 就是该同步点实际对齐的 IMU 传感器时间
 
@@ -27,36 +28,44 @@ MCU 侧相机同步模块。
 
 ```cpp
 struct SyncCommand {
-  uint32_t div;
-  uint32_t active_level;
-  uint32_t seq;
+  uint8_t version;
+  uint8_t seq;
+  uint8_t flags;
+  uint8_t sync_probe_div;
+  uint8_t run_trigger_div;
+  uint8_t active_level;
 };
 ```
 
-- `div`：单次反向电平周期拉长倍率，必须大于 `0`。
-- `active_level`：有效触发电平。`0` 表示低有效，非 `0` 表示高有效。
+- `version`：当前为 `1`。
 - `seq`：上位机每次同步自增的序号，MCU 在对应同步点原样回传。
+- `flags`：预留，当前为 `0`。
+- `sync_probe_div`：同步探针间隔，单位是当前运行分频的倍数，必须大于 `0`。
+- `run_trigger_div`：同步完成后的正式触发分频，单位是 IMU 样本数，必须大于 `0`。
+- `active_level`：有效触发电平。`0` 表示低有效，非 `0` 表示高有效。
 
 输出 payload：
 
 ```cpp
 struct SyncEvent {
-  uint32_t seq;
+  uint8_t version;
+  uint8_t seq;
+  uint8_t run_trigger_div;
+  uint8_t active_level;
 };
 ```
 
 实际对齐的 IMU 时间不放在 payload 里，而是使用 topic 消息自带的 timestamp。
-普通 GPIO 翻转不发布回执；只有命令对应的同步点发布 `SyncEvent`。
+普通相机触发不发布回执；只有命令对应的同步点发布 `SyncEvent`。
 
 ## 时序语义
 
-命令回调不会直接翻 GPIO，也不会直接发布同步结果。它只登记一个 pending 命令。
+命令回调不会直接写 GPIO，也不会直接发布同步结果。它只登记一个 pending 命令。
 
-如果 `active_level=1`，反向电平就是低电平；如果 `active_level=0`，反向电平
-就是高电平。每条命令都会等待下一个反向电平周期开始，然后把这个反向周期拉长到
-`trigger_div * div` 个 IMU 样本。长周期结束时 GPIO 翻到有效电平，这个边沿就是
-同步点，MCU 在同一个 IMU 回调中发布 `SyncEvent{seq}`。随后模块恢复正常
-`trigger_div` 周期。
+每条命令开始执行后，MCU 先把相机触发线保持到无效电平。等待
+`当前运行分频 * sync_probe_div` 个 IMU 样本后输出一次有效触发脉冲，这个边沿就是
+同步点，MCU 在同一个 IMU 回调中发布 `SyncEvent{seq, run_trigger_div}`。随后模块把
+正常触发分频切到 `run_trigger_div`。
 
 上位机应等待当前 `seq` 回执后再发送下一条同步命令；模块只保留一个 pending 命令，
 用于保持 IMU 回调热路径简单且固定。
@@ -70,7 +79,7 @@ constructor_args:
   - camera_pin_name: "CAMERA"
   - camera_sync_topic_name: "camera_sync_result"
   - imu_topic_name: "bmi088_gyro"
-  - trigger_div: 10
+  - trigger_div: 50
   - camera_sync_command_topic_name: "camera_sync_command"
 template_args: []
 ```

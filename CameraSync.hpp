@@ -92,7 +92,7 @@ public:
 
     command_callback_ = LibXR::Topic::Callback::Create(
         [](bool, CameraSync *self, LibXR::MicrosecondTimestamp,
-           const SyncCommand &command) { self->OnCommand(command); },
+           LibXR::RawData &data) { self->OnCommandData(data); },
         this);
     command_topic_.RegisterCallback(command_callback_);
 
@@ -108,10 +108,22 @@ private:
     STRETCH_REVERSE_PERIOD = 2,
   };
 
+  void OnCommandData(LibXR::RawData &data) {
+    if (data.addr_ == nullptr || data.size_ != sizeof(SyncCommand)) {
+      return;
+    }
+
+    SyncCommand command;
+    LibXR::Memory::FastCopy(&command, data.addr_, sizeof(command));
+    OnCommand(command);
+  }
+
   void OnCommand(const SyncCommand &command) {
     // 上位机应等待回执后再发下一条命令；模块只保留最新一条待执行命令。
-    ASSERT(command.div != 0);
-    ASSERT(command.div <= std::numeric_limits<uint32_t>::max() / trigger_div_);
+    if (command.div == 0 ||
+        command.div > std::numeric_limits<uint32_t>::max() / trigger_div_) {
+      return;
+    }
 
     pending_command_.div = command.div;
     pending_command_.active_level = command.active_level == 0 ? 0U : 1U;

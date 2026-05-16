@@ -35,33 +35,40 @@ public:
   using ImuSample = Eigen::Matrix<float, 3, 1>;
 
   /**
+   * @brief 同步命令标志位。
+   *
+   * 当前只定义恢复默认分频命令；普通同步命令必须保持 flags 为 0。
+   */
+  enum SyncCommandFlags : uint8_t {
+    RESET_TO_DEFAULT = 1U << 0,  ///< 取消同步状态并恢复构造参数 trigger_div。
+  };
+
+  /**
    * @brief 上位机同步命令。
-   * @details sync_probe_div 是当前运行分频的探针倍率，run_trigger_div 是同步完成后
-   *          的正常触发分频，单位是 IMU 样本数。active_level 是相机有效触发电平，
-   *          seq 由上位机自增，MCU 在对应同步点回传同一个 seq。
+   * @details flags 为 0 时执行普通同步；RESET_TO_DEFAULT 只恢复默认触发分频，
+   *          不触发相机也不发布 SyncEvent。sync_probe_div 是当前运行分频的探针
+   *          倍率，run_trigger_div 是同步完成后的正常触发分频，单位是 IMU 样本数。
    */
   struct SyncCommand {
-    uint8_t version = 1;
-    uint8_t seq = 0;
-    uint8_t flags = 0;
-    uint8_t sync_probe_div = 3;
-    uint8_t run_trigger_div = 50;
-    uint8_t active_level = 1;
+    uint8_t flags = 0;          ///< 0 为普通同步；见 SyncCommandFlags。
+    uint8_t active_level = 1;   ///< 相机触发有效电平，0 为低有效，非 0 为高有效。
+    uint8_t seq = 0;            ///< 普通同步序号，reset 命令不使用。
+    uint8_t sync_probe_div = 3; ///< 探针间隔倍率，普通同步时必须非 0。
+    uint8_t run_trigger_div = 50; ///< 同步完成后的运行分频，普通同步时必须非 0。
   };
 
   /**
    * @brief 同步点回执。
-   * @details 实际同步时间使用 topic 消息自带 timestamp，不再复制到 payload 里。
+   * @details 实际同步时间使用 topic 消息自带 timestamp。
    */
   struct SyncEvent {
-    uint8_t version = 1;
-    uint8_t seq = 0;
-    uint8_t run_trigger_div = 50;
-    uint8_t active_level = 1;
+    uint8_t seq = 0;             ///< 对应 SyncCommand::seq。
+    uint8_t run_trigger_div = 50; ///< MCU 在同步点之后采用的运行分频。
+    uint8_t active_level = 1;     ///< MCU 在同步点采用的触发有效电平。
   };
 
-  static_assert(sizeof(SyncCommand) == 6);
-  static_assert(sizeof(SyncEvent) == 4);
+  static_assert(sizeof(SyncCommand) == 5);
+  static_assert(sizeof(SyncEvent) == 3);
 
   /**
    * @brief 构造 CameraSync 模块。
@@ -82,6 +89,7 @@ public:
         imu_topic_(imu_topic_name, sizeof(ImuSample)),
         command_topic_(camera_sync_command_topic_name, sizeof(SyncCommand)),
         camera_sync_topic_(camera_sync_topic_name, sizeof(SyncEvent)),
+        default_trigger_div_(ClampDiv(trigger_div)),
         trigger_div_(ClampDiv(trigger_div)) {
     ASSERT(trigger_div != 0);
 
@@ -105,15 +113,27 @@ public:
     app.Register(*this);
   }
 
+  /**
+   * @brief CameraSync 当前不输出周期监控。
+   */
   void OnMonitor() override {}
 
 private:
-  static constexpr uint8_t command_version = 1;
-  static constexpr uint8_t default_run_trigger_div = 50;
-  static constexpr uint8_t min_pulse_hold_samples = 1;
+  static constexpr uint8_t default_run_trigger_div = 50;  ///< 未构造时的保底默认分频。
+  static constexpr uint8_t min_pulse_hold_samples = 1;    ///< 触发脉冲至少保持的 IMU 样本数。
+  static constexpr uint8_t known_command_flags = RESET_TO_DEFAULT;  ///< 当前支持的 flags 位。
 
-  enum class SyncState : uint8_t { NORMAL = 0, WAIT_PROBE_EDGE = 1 };
+  /**
+   * @brief MCU 侧触发状态。
+   */
+  enum class SyncState : uint8_t {
+    NORMAL = 0,          ///< 按 trigger_div_ 周期正常触发。
+    WAIT_PROBE_EDGE = 1, ///< 等待本次同步命令制造的探针触发边沿。
+  };
 
+  /**
+   * @brief 将外部传入的分频限制到协议可表示范围。
+   */
   static uint8_t ClampDiv(uint32_t div) {
     if (div == 0) {
       return 1;
@@ -124,6 +144,9 @@ private:
     return static_cast<uint8_t>(div);
   }
 
+  /**
+   * @brief 从 RawData 中解析同步命令。
+   */
   void OnCommandData(LibXR::RawData &data) {
     if (data.addr_ == nullptr || data.size_ != sizeof(SyncCommand)) {
       return;
@@ -134,10 +157,25 @@ private:
     OnCommand(command);
   }
 
+  /**
+   * @brief 处理上位机命令。
+   *
+   * reset 命令立即生效；普通同步命令只登记 pending，真正 GPIO 操作仍在 IMU 回调
+   * 中执行。
+   */
   void OnCommand(const SyncCommand &command) {
+    if ((command.flags & static_cast<uint8_t>(~known_command_flags)) != 0) {
+      return;
+    }
+
+    active_level_ = command.active_level == 0 ? 0U : 1U;
+    if ((command.flags & RESET_TO_DEFAULT) != 0) {
+      ResetToDefault();
+      return;
+    }
+
     // 上位机应等待回执后再发下一条命令；模块只保留最新一条待执行命令。
-    if (command.version != command_version || command.sync_probe_div == 0 ||
-        command.run_trigger_div == 0) {
+    if (command.sync_probe_div == 0 || command.run_trigger_div == 0) {
       return;
     }
 
@@ -148,6 +186,27 @@ private:
     pending_command_ready_ = true;
   }
 
+  /**
+   * @brief 恢复构造参数给出的默认触发分频。
+   *
+   * 该命令用于处理 Host 重启但 MCU 未重启的情况。它不制造探针边沿，不发布
+   * SyncEvent，只保证后续重新同步从默认触发状态开始。
+   */
+  void ResetToDefault() {
+    pending_command_ready_ = false;
+    sync_state_ = SyncState::NORMAL;
+    trigger_div_ = default_trigger_div_;
+    active_probe_interval_samples_ = default_trigger_div_;
+    pending_run_div_ = default_trigger_div_;
+    samples_since_trigger_ = 0;
+    pulse_hold_samples_ = 0;
+    active_seq_ = 0;
+    camera_sync_pin_.Write(!active_level_);
+  }
+
+  /**
+   * @brief 若当前处于正常触发态，则开始执行一条 pending 同步命令。
+   */
   void StartPendingCommandIfIdle() {
     if (sync_state_ != SyncState::NORMAL || !pending_command_ready_) {
       return;
@@ -204,7 +263,6 @@ private:
     }
 
     SyncEvent event;
-    event.version = command_version;
     event.seq = active_seq_;
     event.run_trigger_div = pending_run_div_;
     event.active_level = active_level_;
@@ -219,6 +277,7 @@ private:
   LibXR::Topic::Callback imu_callback_;
   LibXR::Topic::Callback command_callback_;
 
+  uint8_t default_trigger_div_ = default_run_trigger_div;
   uint8_t trigger_div_ = default_run_trigger_div;
   uint16_t samples_since_trigger_ = 0;
   uint8_t pulse_hold_samples_ = 0;

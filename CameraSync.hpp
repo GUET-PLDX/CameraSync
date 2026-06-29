@@ -86,9 +86,11 @@ public:
              const char *camera_sync_command_topic_name)
       : camera_sync_pin_(
             *hw.template FindOrExit<LibXR::GPIO>({camera_pin_name})),
-        imu_topic_(imu_topic_name, sizeof(ImuSample)),
-        command_topic_(camera_sync_command_topic_name, sizeof(SyncCommand)),
-        camera_sync_topic_(camera_sync_topic_name, sizeof(SyncEvent)),
+        imu_topic_(LibXR::Topic::CreateTopic<ImuSample>(imu_topic_name)),
+        command_topic_(LibXR::Topic::CreateTopic<SyncCommand>(
+            camera_sync_command_topic_name)),
+        camera_sync_topic_(LibXR::Topic::CreateTopic<SyncEvent>(
+            camera_sync_topic_name)),
         default_trigger_div_(ClampDiv(trigger_div)),
         trigger_div_(ClampDiv(trigger_div)) {
     ASSERT(trigger_div != 0);

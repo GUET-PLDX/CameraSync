@@ -31,7 +31,7 @@ depends: []
  *          回传 seq 和实际采用的运行分频，同步时间由 Topic 消息时间戳表示。
  */
 class CameraSync : public LibXR::Application {
-public:
+ public:
   using ImuSample = Eigen::Matrix<float, 3, 1>;
 
   /**
@@ -47,14 +47,17 @@ public:
    * @brief 上位机同步命令。
    * @details flags 为 0 时执行普通同步；RESET_TO_DEFAULT 只恢复默认触发分频，
    *          不触发相机也不发布 SyncEvent。sync_probe_div 是当前运行分频的探针
-   *          倍率，run_trigger_div 是同步完成后的正常触发分频，单位是 IMU 样本数。
+   *          倍率，run_trigger_div 是同步完成后的正常触发分频，单位是 IMU
+   * 样本数。
    */
   struct SyncCommand {
-    uint8_t flags = 0;          ///< 0 为普通同步；见 SyncCommandFlags。
-    uint8_t active_level = 1;   ///< 相机触发有效电平，0 为低有效，非 0 为高有效。
-    uint8_t seq = 0;            ///< 普通同步序号，reset 命令不使用。
-    uint8_t sync_probe_div = 3; ///< 探针间隔倍率，普通同步时必须非 0。
-    uint8_t run_trigger_div = 50; ///< 同步完成后的运行分频，普通同步时必须非 0。
+    uint8_t flags = 0;  ///< 0 为普通同步；见 SyncCommandFlags。
+    uint8_t active_level =
+        1;            ///< 相机触发有效电平，0 为低有效，非 0 为高有效。
+    uint8_t seq = 0;  ///< 普通同步序号，reset 命令不使用。
+    uint8_t sync_probe_div = 3;  ///< 探针间隔倍率，普通同步时必须非 0。
+    uint8_t run_trigger_div =
+        50;  ///< 同步完成后的运行分频，普通同步时必须非 0。
   };
 
   /**
@@ -62,9 +65,9 @@ public:
    * @details 实际同步时间使用 topic 消息自带 timestamp。
    */
   struct SyncEvent {
-    uint8_t seq = 0;             ///< 对应 SyncCommand::seq。
-    uint8_t run_trigger_div = 50; ///< MCU 在同步点之后采用的运行分频。
-    uint8_t active_level = 1;     ///< MCU 在同步点采用的触发有效电平。
+    uint8_t seq = 0;               ///< 对应 SyncCommand::seq。
+    uint8_t run_trigger_div = 50;  ///< MCU 在同步点之后采用的运行分频。
+    uint8_t active_level = 1;      ///< MCU 在同步点采用的触发有效电平。
   };
 
   static_assert(sizeof(SyncCommand) == 5);
@@ -80,17 +83,17 @@ public:
    * @param trigger_div 默认每多少个 IMU 样本触发一次相机，必须在 1 到 255 之间
    * @param camera_sync_command_topic_name 上位机同步命令 Topic 名称
    */
-  CameraSync(LibXR::HardwareContainer &hw, LibXR::ApplicationManager &app,
-             const char *camera_pin_name, const char *camera_sync_topic_name,
-             const char *imu_topic_name, uint32_t trigger_div,
-             const char *camera_sync_command_topic_name)
+  CameraSync(LibXR::HardwareContainer& hw, LibXR::ApplicationManager& app,
+             const char* camera_pin_name, const char* camera_sync_topic_name,
+             const char* imu_topic_name, uint32_t trigger_div,
+             const char* camera_sync_command_topic_name)
       : camera_sync_pin_(
             *hw.template FindOrExit<LibXR::GPIO>({camera_pin_name})),
         imu_topic_(LibXR::Topic::CreateTopic<ImuSample>(imu_topic_name)),
         command_topic_(LibXR::Topic::CreateTopic<SyncCommand>(
             camera_sync_command_topic_name)),
-        camera_sync_topic_(LibXR::Topic::CreateTopic<SyncEvent>(
-            camera_sync_topic_name)),
+        camera_sync_topic_(
+            LibXR::Topic::CreateTopic<SyncEvent>(camera_sync_topic_name)),
         default_trigger_div_(ClampDiv(trigger_div)),
         trigger_div_(ClampDiv(trigger_div)) {
     ASSERT(trigger_div != 0);
@@ -101,14 +104,14 @@ public:
     camera_sync_pin_.Write(false);
 
     imu_callback_ = LibXR::Topic::Callback::Create(
-        [](bool in_isr, CameraSync *self, LibXR::MicrosecondTimestamp timestamp,
-           const ImuSample &) { self->OnImuMessage(in_isr, timestamp); },
+        [](bool in_isr, CameraSync* self, LibXR::MicrosecondTimestamp timestamp,
+           const ImuSample&) { self->OnImuMessage(in_isr, timestamp); },
         this);
     imu_topic_.RegisterCallback(imu_callback_);
 
     command_callback_ = LibXR::Topic::Callback::Create(
-        [](bool, CameraSync *self, LibXR::MicrosecondTimestamp,
-           LibXR::RawData &data) { self->OnCommandData(data); },
+        [](bool, CameraSync* self, LibXR::MicrosecondTimestamp,
+           LibXR::RawData& data) { self->OnCommandData(data); },
         this);
     command_topic_.RegisterCallback(command_callback_);
 
@@ -120,17 +123,20 @@ public:
    */
   void OnMonitor() override {}
 
-private:
-  static constexpr uint8_t default_run_trigger_div = 50;  ///< 未构造时的保底默认分频。
-  static constexpr uint8_t min_pulse_hold_samples = 1;    ///< 触发脉冲至少保持的 IMU 样本数。
-  static constexpr uint8_t known_command_flags = RESET_TO_DEFAULT;  ///< 当前支持的 flags 位。
+ private:
+  static constexpr uint8_t default_run_trigger_div =
+      50;  ///< 未构造时的保底默认分频。
+  static constexpr uint8_t min_pulse_hold_samples =
+      1;  ///< 触发脉冲至少保持的 IMU 样本数。
+  static constexpr uint8_t known_command_flags =
+      RESET_TO_DEFAULT;  ///< 当前支持的 flags 位。
 
   /**
    * @brief MCU 侧触发状态。
    */
   enum class SyncState : uint8_t {
-    NORMAL = 0,          ///< 按 trigger_div_ 周期正常触发。
-    WAIT_PROBE_EDGE = 1, ///< 等待本次同步命令制造的探针触发边沿。
+    NORMAL = 0,           ///< 按 trigger_div_ 周期正常触发。
+    WAIT_PROBE_EDGE = 1,  ///< 等待本次同步命令制造的探针触发边沿。
   };
 
   /**
@@ -149,7 +155,7 @@ private:
   /**
    * @brief 从 RawData 中解析同步命令。
    */
-  void OnCommandData(LibXR::RawData &data) {
+  void OnCommandData(LibXR::RawData& data) {
     if (data.addr_ == nullptr || data.size_ != sizeof(SyncCommand)) {
       return;
     }
@@ -165,7 +171,7 @@ private:
    * reset 命令立即生效；普通同步命令只登记 pending，真正 GPIO 操作仍在 IMU 回调
    * 中执行。
    */
-  void OnCommand(const SyncCommand &command) {
+  void OnCommand(const SyncCommand& command) {
     if ((command.flags & static_cast<uint8_t>(~known_command_flags)) != 0) {
       return;
     }
@@ -236,9 +242,9 @@ private:
     StartPendingCommandIfIdle();
     samples_since_trigger_++;
 
-    const uint16_t current_interval =
-        sync_state_ == SyncState::WAIT_PROBE_EDGE ? active_probe_interval_samples_
-                                                  : trigger_div_;
+    const uint16_t current_interval = sync_state_ == SyncState::WAIT_PROBE_EDGE
+                                          ? active_probe_interval_samples_
+                                          : trigger_div_;
     if (samples_since_trigger_ < current_interval) {
       return;
     }
@@ -271,7 +277,7 @@ private:
     camera_sync_topic_.PublishFromCallback(event, imu_timestamp, in_isr);
   }
 
-  LibXR::GPIO &camera_sync_pin_;
+  LibXR::GPIO& camera_sync_pin_;
 
   LibXR::Topic imu_topic_;
   LibXR::Topic command_topic_;

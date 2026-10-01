@@ -15,6 +15,7 @@ depends: []
 === END MANIFEST === */
 // clang-format on
 
+#include <algorithm>
 #include <cstdint>
 
 #include "app_framework.hpp"
@@ -143,13 +144,7 @@ class CameraSync : public LibXR::Application {
    * @brief 将外部传入的分频限制到协议可表示范围。
    */
   static uint8_t ClampDiv(uint32_t div) {
-    if (div == 0) {
-      return 1;
-    }
-    if (div > UINT8_MAX) {
-      return UINT8_MAX;
-    }
-    return static_cast<uint8_t>(div);
+    return static_cast<uint8_t>(std::clamp<uint32_t>(div, 1U, UINT8_MAX));
   }
 
   /**

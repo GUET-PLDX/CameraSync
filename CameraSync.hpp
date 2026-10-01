@@ -111,7 +111,7 @@ class CameraSync : public LibXR::Application {
 
     command_callback_ = LibXR::Topic::Callback::Create(
         [](bool, CameraSync* self, LibXR::MicrosecondTimestamp,
-           LibXR::RawData& data) { self->OnCommandData(data); },
+           const SyncCommand& command) { self->OnCommand(command); },
         this);
     command_topic_.RegisterCallback(command_callback_);
 
@@ -150,19 +150,6 @@ class CameraSync : public LibXR::Application {
       return UINT8_MAX;
     }
     return static_cast<uint8_t>(div);
-  }
-
-  /**
-   * @brief 从 RawData 中解析同步命令。
-   */
-  void OnCommandData(LibXR::RawData& data) {
-    if (data.addr_ == nullptr || data.size_ != sizeof(SyncCommand)) {
-      return;
-    }
-
-    SyncCommand command;
-    LibXR::Memory::FastCopy(&command, data.addr_, sizeof(command));
-    OnCommand(command);
   }
 
   /**
